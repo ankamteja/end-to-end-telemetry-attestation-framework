@@ -1,0 +1,12 @@
+# containerlab runtime artifacts
+clab-*/
+.clab.*
+*.tar
+# python
+__pycache__/
+*.pyc
+# generated keys / certs (later steps)
+keys/
+certs/
+*.key
+*.pub
