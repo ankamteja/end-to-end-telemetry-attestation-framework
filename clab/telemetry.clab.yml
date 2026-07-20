@@ -1,0 +1,125 @@
+# Step 1 -- Network only.
+#
+# This topology stands up the testbed FABRIC: the hosts, the router, the
+# gateway box, the SIEM box, the attacker, and the wiring between them.
+# There is NO telemetry / attestation software inside the nodes yet -- that
+# arrives in later steps. The goal of this step is a booting, fully routed
+# network you can ping end to end.
+#
+#   UNTRUSTED LAN  10.0.10.0/24     (shared L2 -- ARP-spoofable by attacker)
+#     src1 .11   src2 .12   src3 .13   attacker .20   r1(eth1) .1
+#                              |
+#                          r1 (FRR router)
+#                              |
+#   TRANSIT       10.0.20.0/24     r1(eth2) .1   gateway(eth1) .2
+#                              |
+#   SIEM-NET      10.0.30.0/24     gateway(eth2) .1   siem(eth1) .2
+#
+# Sources reach the SIEM only THROUGH r1 and the gateway. The attacker shares
+# the LAN's broadcast domain with the sources and r1, so later steps can do
+# real man-in-the-middle from node `attacker` -- not a localhost shortcut.
+
+name: telemetry-attestation
+
+topology:
+  nodes:
+    # ---- shared L2 broadcast domain for the untrusted LAN ----
+    # A container-managed switch: one node that bridges all of its ports into a
+    # single broadcast segment. This gives a real, ARP-spoofable L2 domain in
+    # later steps without needing a host bridge or root -- point-to-point veths
+    # could not be MITM'd. eth1..eth5 = src1, src2, src3, attacker, r1.
+    lan-sw:
+      kind: linux
+      image: frrouting/frr:latest
+      entrypoint: /bin/sh -c "sleep infinity"
+      exec:
+        - ip link add name br0 type bridge
+        - ip link set br0 up
+        - ip link set eth1 master br0
+        - ip link set eth2 master br0
+        - ip link set eth3 master br0
+        - ip link set eth4 master br0
+        - ip link set eth5 master br0
+        - ip link set eth1 up
+        - ip link set eth2 up
+        - ip link set eth3 up
+        - ip link set eth4 up
+        - ip link set eth5 up
+
+    # ---- telemetry sources (plain hosts for now) ----
+    src1:
+      kind: linux
+      image: alpine:3.20
+      cmd: sleep infinity
+      exec:
+        - ip addr add 10.0.10.11/24 dev eth1
+        - ip route replace default via 10.0.10.1
+    src2:
+      kind: linux
+      image: alpine:3.20
+      cmd: sleep infinity
+      exec:
+        - ip addr add 10.0.10.12/24 dev eth1
+        - ip route replace default via 10.0.10.1
+    src3:
+      kind: linux
+      image: alpine:3.20
+      cmd: sleep infinity
+      exec:
+        - ip addr add 10.0.10.13/24 dev eth1
+        - ip route replace default via 10.0.10.1
+
+    # ---- attacker (on the LAN, same segment as the sources) ----
+    attacker:
+      kind: linux
+      image: alpine:3.20
+      cmd: sleep infinity
+      exec:
+        - ip addr add 10.0.10.20/24 dev eth1
+        - ip route replace default via 10.0.10.1
+
+    # ---- router: LAN <-> TRANSIT ----
+    r1:
+      kind: linux
+      image: frrouting/frr:latest
+      exec:
+        - ip addr add 10.0.10.1/24 dev eth1
+        - ip addr add 10.0.20.1/24 dev eth2
+        - sysctl -w net.ipv4.ip_forward=1
+        # reach the SIEM network via the gateway
+        - ip route replace 10.0.30.0/24 via 10.0.20.2
+
+    # ---- gateway box: TRANSIT <-> SIEM-NET (dual-homed, forwards) ----
+    # In later steps the verifier process runs here. For now it is just the
+    # routed box that sits in front of the SIEM.
+    gateway:
+      kind: linux
+      image: alpine:3.20
+      cmd: sleep infinity
+      exec:
+        - ip addr add 10.0.20.2/24 dev eth1
+        - ip addr add 10.0.30.1/24 dev eth2
+        - sysctl -w net.ipv4.ip_forward=1
+        # reach the LAN back through r1
+        - ip route replace 10.0.10.0/24 via 10.0.20.1
+
+    # ---- SIEM box ----
+    siem:
+      kind: linux
+      image: alpine:3.20
+      cmd: sleep infinity
+      exec:
+        - ip addr add 10.0.30.2/24 dev eth1
+        - ip route replace default via 10.0.30.1
+
+  links:
+    # untrusted LAN -> switch (order sets lan-sw eth1..eth5)
+    - endpoints: ["src1:eth1", "lan-sw:eth1"]
+    - endpoints: ["src2:eth1", "lan-sw:eth2"]
+    - endpoints: ["src3:eth1", "lan-sw:eth3"]
+    - endpoints: ["attacker:eth1", "lan-sw:eth4"]
+    - endpoints: ["r1:eth1", "lan-sw:eth5"]
+    # transit
+    - endpoints: ["r1:eth2", "gateway:eth1"]
+    # siem network
+    - endpoints: ["gateway:eth2", "siem:eth1"]
