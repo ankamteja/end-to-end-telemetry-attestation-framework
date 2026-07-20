@@ -72,4 +72,4 @@ Early development — topology and attestation prototype in progress.
 
 ## License
 
-To be added.
+Released under the [MIT License](LICENSE).
